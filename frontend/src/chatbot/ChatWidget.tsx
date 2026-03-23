@@ -146,7 +146,8 @@ export default function ChatWidget() {
     try {
       let extractedText = '';
 
-      const isTextFile = file.type === 'text/plain' || file.type === 'text/csv' || file.type === 'text/markdown' || file.type === 'text/x-markdown' || file.name.endsWith('.md') || file.name.endsWith('.txt') || file.name.endsWith('.csv');
+      const textExtensions = ['.txt','.csv','.md','.json','.xml','.yaml','.yml','.html','.htm','.log'];
+      const isTextFile = file.type.startsWith('text/') || textExtensions.some(ext => file.name.toLowerCase().endsWith(ext));
       if (isTextFile) {
         // Plain text / CSV — read directly
         extractedText = await file.text();
@@ -173,10 +174,25 @@ export default function ChatWidget() {
 
       setAttachment({ name: file.name, type: file.type, text: extractedText });
 
-      // Auto-fill input with a prompt about the file
-      setInput(prev =>
-        prev || `I've uploaded "${file.name}". Please analyse this document and give me a summary.`
-      );
+      // Smart auto-prompt based on file category
+      const ext      = file.name.toLowerCase().split('.').pop() || '';
+      const isImage  = file.type.startsWith('image/');
+      const isSpread = ['xls','xlsx','csv'].includes(ext);
+      const isSlide  = ['ppt','pptx'].includes(ext);
+      const isWord   = ['doc','docx'].includes(ext);
+      const isCode   = ['json','xml','yaml','yml','html','htm','log'].includes(ext);
+      const isMd     = ext === 'md';
+
+      const autoPrompt =
+        isImage  ? `I've uploaded the image "${file.name}". Based on its filename, what type of image might this be and what context can you provide?`
+        : isSpread ? `I've uploaded the spreadsheet "${file.name}". Please analyse the data and give me a summary of the key figures and trends.`
+        : isSlide  ? `I've uploaded the presentation "${file.name}". Please summarise the key points from the content.`
+        : isWord   ? `I've uploaded the document "${file.name}". Please give me a clear summary of the key information.`
+        : isCode   ? `I've uploaded the file "${file.name}". Please analyse the structure and content and explain what it represents.`
+        : isMd     ? `I've uploaded the markdown file "${file.name}". Please summarise the content and highlight the main points.`
+        : `I've uploaded "${file.name}". Please analyse the content and give me a brief summary.`;
+
+      setInput(prev => prev || autoPrompt);
     } catch (err) {
       setMicError('Could not read file. Try a .txt or .pdf file.');
       setTimeout(() => setMicError(''), 3000);
@@ -224,9 +240,12 @@ export default function ChatWidget() {
     const text = input.trim();
     if (!text || isLoading) return;
 
-    // Build message content — include file content if attached
+    // Build message — trim file content so Ollama doesn't time out
+    const fileContent = attachment?.text
+      ? attachment.text.slice(0, 1500) + (attachment.text.length > 1500 ? '\n...[truncated for speed]' : '')
+      : '';
     const fullMessage = attachment
-      ? `${text}\n\n---\nFILE: ${attachment.name}\nCONTENT:\n${attachment.text}`
+      ? `${text}\n\n---\nFILE: ${attachment.name}\nCONTENT:\n${fileContent}`
       : text;
 
     const userMsg: Message = {
@@ -243,12 +262,16 @@ export default function ChatWidget() {
     setIsLoading(true);
 
     try {
-      const token = localStorage.getItem('token') || '';
-      const res   = await fetch('http://localhost:8000/api/chat', {
+      const token      = localStorage.getItem('token') || '';
+      const controller = new AbortController();
+      const timeoutId  = setTimeout(() => controller.abort(), 90000); // 90s timeout
+      const res = await fetch('http://localhost:8000/api/chat', {
         method:  'POST',
         headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
         body:    JSON.stringify({ message: fullMessage }),
+        signal:  controller.signal,
       });
+      clearTimeout(timeoutId);
       const data  = await res.json();
       const reply = data.reply || data.detail || '⚠️ No response received.';
 
@@ -268,10 +291,16 @@ export default function ChatWidget() {
           },
         }]), 400);
       }
-    } catch {
+    } catch (err: any) {
+      const isTimeout = err?.name === 'AbortError';
       setMessages(prev => [
         ...prev.filter(m => m.id !== thinkId),
-        { id: thinkId, type: 'ai', content: '⚠️ **Connection Error** — ensure the backend is running on port 8000.' },
+        {
+          id: thinkId, type: 'ai',
+          content: isTimeout
+            ? '⚠️ **AI is taking too long.** The model is busy or the file is too large.\n\nTry:\n- Ask a shorter question\n- Upload a smaller file\n- Run `ollama run llama3.2:1b` in terminal'
+            : '⚠️ **Connection Error** — ensure the backend is running on port 8000.',
+        },
       ]);
     } finally {
       setIsLoading(false);
@@ -285,7 +314,7 @@ export default function ChatWidget() {
       <input
         ref={fileInputRef}
         type="file"
-        accept=".txt,.csv,.pdf,.png,.jpg,.jpeg,.webp,.doc,.docx,.md"
+        accept=".txt,.csv,.pdf,.md,.png,.jpg,.jpeg,.webp,.gif,.bmp,.doc,.docx,.xls,.xlsx,.ppt,.pptx,.json,.xml,.yaml,.yml,.html,.htm,.log"
         style={{ display: 'none' }}
         onChange={handleFileSelect}
       />
@@ -424,7 +453,7 @@ export default function ChatWidget() {
                 type="button"
                 className={`cw-icon-btn ${attachment ? 'cw-icon-btn-active' : ''}`}
                 onClick={() => fileInputRef.current?.click()}
-                title="Upload file (.pdf, .txt, .csv, .md, .doc, .docx, .png, .jpg, .jpeg, .webp)"
+                title="Upload: PDF, Word, Excel, PPT, TXT, CSV, MD, JSON, XML, YAML, HTML, Images, Logs"
               >
                 <Paperclip size={16} />
               </button>
