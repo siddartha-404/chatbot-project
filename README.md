@@ -1,4 +1,4 @@
-# Chatbot -Text and Voice Agents
+# Chatbot - Text And Voice Agents
 
 ## Tech Stack
 - **Frontend:** React, Vite, TypeScript, Tailwind CSS
