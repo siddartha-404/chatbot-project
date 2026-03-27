@@ -1,6 +1,8 @@
+
 'use client';
 
 import React, { useState, useRef, useEffect } from 'react';
+import { useNavigate } from 'react-router-dom';
 import {
   MessageCircle, X, Send, Mic, MicOff, Paperclip,
   TrendingUp, Bot, Sparkles, FileText, Image, File,
@@ -52,6 +54,7 @@ const FileIcon: React.FC<{ mime: string }> = ({ mime }) => {
 // ─── Main widget ──────────────────────────────────────────────
 export default function ChatWidget() {
   const [isOpen,      setIsOpen]      = useState(false);
+  const navigate = useNavigate();
   const [messages,    setMessages]    = useState<Message[]>([{
     id: '1', type: 'ai',
     content:
@@ -296,13 +299,27 @@ export default function ChatWidget() {
 
       setMessages(prev => prev.map(m => m.id === thinkId ? { ...m, resolved: true } : m));
       await new Promise(r => setTimeout(r, 200));
+
+      // --- NEW: Handle Navigation Marker ---
+      let finalReply = reply;
+      const navMatch = finalReply.match(/🧭NAV:([a-z]+)/);
+      if (navMatch) {
+        const page = navMatch[1];
+        const paths: Record<string, string> = { dashboard: '/', clients: '/clients', portfolios: '/portfolios', services: '/services', meetings: '/meetings' };
+        if (paths[page]) {
+          navigate(paths[page]);
+        }
+        // Remove the ugly tag from the text the user sees
+        finalReply = finalReply.replace(/🧭NAV:[a-z]+/, '').trim();
+      }
+
       setMessages(prev => [
         ...prev.filter(m => m.id !== thinkId),
-        { id: thinkId, type: 'ai', content: reply },
+        { id: thinkId, type: 'ai', content: finalReply },
       ]);
 
-      // NEW: Dispatch event to trigger frontend reload if AI confirms action
-      if (reply.includes('✅') || reply.includes('🗑️')) {
+      // Dispatch event to trigger frontend reload if AI confirms action
+      if (finalReply.includes('✅') || finalReply.includes('🗑️')) {
         window.dispatchEvent(new Event('db-updated'));
       }
 

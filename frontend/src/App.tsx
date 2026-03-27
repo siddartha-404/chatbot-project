@@ -387,7 +387,6 @@ const ClientsPage: React.FC = () => {
       .then(r => r.json()).then(d => setClients(Array.isArray(d) ? d : [])).catch(() => {});
   }, []);
 
-  // NEW: Added Event Listener for AI Chatbot Updates
   useEffect(() => { 
     loadClients(); 
     const handleUpdate = () => loadClients();
@@ -513,7 +512,6 @@ const PortfoliosPage: React.FC = () => {
     apiFetch('http://localhost:8000/api/portfolios').then(r => r.json()).then(d => setPortfolios(Array.isArray(d) ? d : [])).catch(() => {});
   }, []);
 
-  // NEW: Added Event Listener for AI Chatbot Updates
   useEffect(() => { 
     loadData(); 
     const handleUpdate = () => loadData();
@@ -551,18 +549,18 @@ const PortfoliosPage: React.FC = () => {
           + Assign Portfolio
         </button>
       </div>
-      {portfolios.length === 0 && (
+      {portfolios.filter(p => clients.some(c => c.id === p.client_id)).length === 0 && (
         <div className="p-10 rounded-2xl border border-white/10 bg-white/5 text-center text-slate-500 text-sm">
           No portfolios yet — assign one to a client.
         </div>
       )}
       <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-        {portfolios.map(p => {
+        {portfolios.filter(p => clients.some(c => c.id === p.client_id)).map(p => {
           const owner = clients.find(c => c.id === p.client_id);
           return (
             <div key={p.id} className="p-6 rounded-2xl border border-white/10 bg-white/5 relative overflow-hidden hover:border-emerald-500/30 transition-all">
               <Shield className="absolute top-4 right-4 w-12 h-12 text-white/5" />
-              <p className="text-emerald-400 font-bold text-sm uppercase mb-1 tracking-wider">{owner?.name ?? `Client #${p.client_id}`}</p>
+              <p className="text-emerald-400 font-bold text-sm uppercase mb-1 tracking-wider">{owner?.name}</p>
               <p className="text-3xl font-bold mb-2">${Number(p.value).toLocaleString()}</p>
               <div className="flex items-center gap-2 text-slate-400 text-sm">
                 <Briefcase className="w-4 h-4 text-emerald-500/50 flex-shrink-0" /> {p.assets}
@@ -650,7 +648,6 @@ const MeetingsPage: React.FC = () => {
     apiFetch('http://localhost:8000/api/meetings').then(r => r.json()).then(d => setMeetings(Array.isArray(d) ? d : [])).catch(() => {});
   }, []);
 
-  // NEW: Added Event Listener for AI Chatbot Updates
   useEffect(() => { 
     loadData(); 
     const handleUpdate = () => loadData();
@@ -717,10 +714,10 @@ const MeetingsPage: React.FC = () => {
       <div className="lg:col-span-2 p-6 rounded-3xl border border-white/10 bg-white/5">
         <h2 className="text-xl font-bold mb-6">Advisor Schedule</h2>
         <div className="space-y-3">
-          {meetings.length === 0
+          {meetings.filter(m => clients.some(c => c.id === m.client_id)).length === 0
             ? <p className="text-slate-500 text-center py-10 text-sm">No meetings booked yet.</p>
-            : meetings.map(m => {
-              const name = clients.find(c => c.id === m.client_id)?.name ?? `Client #${m.client_id}`;
+            : meetings.filter(m => clients.some(c => c.id === m.client_id)).map(m => {
+              const name = clients.find(c => c.id === m.client_id)?.name;
               return (
                 <div key={m.id} className="p-4 rounded-xl border border-white/5 bg-white/5 flex items-center justify-between hover:border-emerald-500/30 transition-all group">
                   <div className="flex items-center gap-4">

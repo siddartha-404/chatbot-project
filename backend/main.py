@@ -142,12 +142,11 @@ def get_analytics(current_user: models.User = Depends(get_current_user), db: Ses
     return {"total_aum": f"${total_aum:,.2f}", "total_clients": len(clients), "total_meetings": len(meetings), "average_risk_score": round(avg_risk, 2), "portfolio_count": len(portfolios)}
 
 
-# ── 7. AI CHAT — GEMINI WITH FULL CRUD (CREATE, READ, UPDATE, DELETE) ─────────
+# ── 7. AI CHAT — GEMINI WITH FULL CRUD AND ROUTING ────────────────────────────
 @app.post("/api/chat")
 def chat_with_ai(request: ChatRequest, db: Session = Depends(get_db)):
     if not GEMINI_API_KEY: return {"reply": "⚠️ **System Error:** GEMINI_API_KEY is missing."}
 
-    # Pull Context
     clients = db.query(models.Client).all()
     portfolios = db.query(models.Portfolio).all()
     meetings = db.query(models.Meeting).all()
@@ -171,46 +170,48 @@ def chat_with_ai(request: ChatRequest, db: Session = Depends(get_db)):
     
     RULES:
     1. Answer finance questions expertly.
-    2. Read data directly from the FIRM DATABASE to answer user queries.
-    3. Use the tools to Create, Update, or Delete records when requested.
-    4. STRICT BOOKING RULE: If the user asks to book a meeting but does NOT specify the exact date, time, and advisor, DO NOT use the tool yet. Ask them to clarify the missing details first.
+    2. Read data directly from the FIRM DATABASE.
+    3. Use tools to Create, Update, or Delete records when requested.
+    4. STRICT BOOKING RULE: If the user asks to book a meeting but does NOT specify exact date, time, and advisor, DO NOT use the tool yet. Ask them to clarify the missing details.
+    5. UI NAVIGATION: If the user asks to go to, navigate to, or asks 'how to go to' a page (like clients, portfolios, dashboard), you MUST use the `Maps_ui` tool to take them there directly!
     """
 
-    # ── DEFINING THE TOOLS ──
     book_meeting_tool = {"function_declarations": [{"name": "book_meeting", "description": "Book a meeting.", "parameters": {"type": "object", "properties": {"client_name": {"type": "string"}, "datetime_str": {"type": "string", "description": "YYYY-MM-DD HH:MM"}, "advisor": {"type": "string"}}, "required": ["client_name", "datetime_str", "advisor"]}}]}
     register_client_tool = {"function_declarations": [{"name": "register_client", "description": "Register a new client.", "parameters": {"type": "object", "properties": {"name": {"type": "string"}, "email": {"type": "string"}, "phone": {"type": "string"}, "investment_profile": {"type": "string"}}, "required": ["name", "email", "phone", "investment_profile"]}}]}
     create_portfolio_tool = {"function_declarations": [{"name": "create_portfolio", "description": "Create portfolio.", "parameters": {"type": "object", "properties": {"client_name": {"type": "string"}, "assets": {"type": "string", "description": "Calculate allocation based on risk_score (1-10). e.g., '90% Stocks, 10% Bonds'"}, "value": {"type": "number"}, "risk_score": {"type": "number"}}, "required": ["client_name", "assets", "value", "risk_score"]}}]}
-    
-    # NEW TOOL: Update Client
     update_client_tool = {"function_declarations": [{"name": "update_client", "description": "Update an existing client's details.", "parameters": {"type": "object", "properties": {"client_name": {"type": "string"}, "new_email": {"type": "string"}, "new_phone": {"type": "string"}, "new_profile": {"type": "string"}}, "required": ["client_name"]}}]}
+    delete_record_tool = {"function_declarations": [{"name": "delete_record", "description": "Delete a client, meeting, or portfolio.", "parameters": {"type": "object", "properties": {"client_name": {"type": "string"}, "record_type": {"type": "string", "description": "Must be 'Client', 'Portfolio', or 'Meeting'"}}, "required": ["client_name", "record_type"]}}]}
     
-    # NEW TOOL: Unified Delete
-    delete_record_tool = {"function_declarations": [{"name": "delete_record", "description": "Delete a client, meeting, or portfolio.", "parameters": {"type": "object", "properties": {"client_name": {"type": "string", "description": "Name of the client associated with the record."}, "record_type": {"type": "string", "description": "Must be exactly 'Client', 'Portfolio', or 'Meeting'"}}, "required": ["client_name", "record_type"]}}]}
+    # NEW TOOL: UI Navigation
+    navigate_ui_tool = {"function_declarations": [{"name": "navigate_ui", "description": "Navigate the user's screen to a specific page.", "parameters": {"type": "object", "properties": {"page": {"type": "string", "description": "Allowed values: dashboard, clients, portfolios, services, meetings"}}, "required": ["page"]}}]}
 
     try:
         model = genai.GenerativeModel(
             model_name="gemini-2.5-flash",
             system_instruction=system_instruction,
-            tools=[book_meeting_tool, register_client_tool, create_portfolio_tool, update_client_tool, delete_record_tool]
+            tools=[book_meeting_tool, register_client_tool, create_portfolio_tool, update_client_tool, delete_record_tool, navigate_ui_tool]
         )
 
         response = model.generate_content(request.message)
         
-        # ── EXECUTING THE TOOLS ──
         if response.candidates and response.candidates[0].content.parts:
             part = response.candidates[0].content.parts[0]
             
             if part.function_call:
                 fc = part.function_call
                 args = fc.args
-                client_name = args.get("client_name", "")
+                
+                # --- NEW: Routing Action ---
+                if fc.name == "navigate_ui":
+                    page = args.get("page", "dashboard").lower()
+                    return {"reply": f"Taking you to the {page.capitalize()} page! 🧭NAV:{page}"}
 
-                # Helper to find client securely
+                # --- Database Actions ---
+                client_name = args.get("client_name", "")
                 client = db.query(models.Client).filter(models.Client.name.ilike(f"%{client_name}%")).first()
                 if not client and " " in client_name:
                     client = db.query(models.Client).filter(models.Client.name.ilike(f"%{client_name.split()[0]}%")).first()
 
-                # CREATE OPERATIONS
                 if fc.name == "book_meeting":
                     if not client: return {"reply": f"⚠️ Could not find client '{client_name}'."}
                     try: parsed_dt = datetime.strptime(args.get("datetime_str")[:16].replace("T", " "), "%Y-%m-%d %H:%M")
@@ -232,7 +233,6 @@ def chat_with_ai(request: ChatRequest, db: Session = Depends(get_db)):
                     db.commit()
                     return {"reply": f"✅ **Portfolio Created!** Added to {client.name}'s profile."}
 
-                # UPDATE OPERATION
                 elif fc.name == "update_client":
                     if not client: return {"reply": f"⚠️ Could not find client '{client_name}'."}
                     if args.get("new_email"): client.email = args.get("new_email")
@@ -241,15 +241,17 @@ def chat_with_ai(request: ChatRequest, db: Session = Depends(get_db)):
                     db.commit()
                     return {"reply": f"✅ **Client Updated!** Modifications saved for {client.name}."}
 
-                # DELETE OPERATION
                 elif fc.name == "delete_record":
                     if not client: return {"reply": f"⚠️ Could not find client '{client_name}'."}
                     r_type = args.get("record_type")
                     
                     if r_type == "Client":
+                        # FIX: Cascading Deletes - Delete orphaned records first!
+                        db.query(models.Portfolio).filter(models.Portfolio.client_id == client.id).delete()
+                        db.query(models.Meeting).filter(models.Meeting.client_id == client.id).delete()
                         db.delete(client)
                         db.commit()
-                        return {"reply": f"🗑️ **Client Deleted!** Removed {client.name} and all related records."}
+                        return {"reply": f"🗑️ **Client Deleted!** Removed {client.name} and all related portfolios/meetings."}
                     
                     elif r_type == "Portfolio":
                         port = db.query(models.Portfolio).filter(models.Portfolio.client_id == client.id).first()
