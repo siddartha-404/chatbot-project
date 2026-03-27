@@ -1,5 +1,4 @@
-# Pro Finance AI Platform
-An AI-powered financial analytics dashboard and client management system.
+# Chatbot -Text and Voice Agents
 
 ## Tech Stack
 - **Frontend:** React, Vite, TypeScript, Tailwind CSS
