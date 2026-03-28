@@ -77,16 +77,8 @@ def get_current_user(token: str = Depends(oauth2_scheme), db: Session = Depends(
 
 # ── 5. PYDANTIC SCHEMAS & SERIALISERS ─────────────────────────────────────────
 class Token(BaseModel): access_token: str; token_type: str; username: str; role: str
-
-# NEW: Added schema for handling conversation history
-class MessageHistory(BaseModel): 
-    role: str
-    content: str
-
-class ChatRequest(BaseModel): 
-    message: str
-    history: Optional[List[MessageHistory]] = []
-
+class MessageHistory(BaseModel): role: str; content: str
+class ChatRequest(BaseModel): message: str; history: Optional[List[MessageHistory]] = []
 class ClientCreate(BaseModel): name: str; email: str; phone: str; investment_profile: str
 class PortfolioCreate(BaseModel): client_id: int; assets: str; value: float; risk_score: float
 class MeetingCreate(BaseModel): client_id: int; datetime: str; advisor: str
@@ -152,132 +144,238 @@ def get_analytics(current_user: models.User = Depends(get_current_user), db: Ses
     return {"total_aum": f"${total_aum:,.2f}", "total_clients": len(clients), "total_meetings": len(meetings), "average_risk_score": round(avg_risk, 2), "portfolio_count": len(portfolios)}
 
 
-# ── 7. AI CHAT — GEMINI WITH FULL CRUD AND ROUTING ────────────────────────────
+# ── 7. AI CHAT — GEMINI WITH FULL CRUD, ROUTING, AND NLU ──────────────────────
 @app.post("/api/chat")
 def chat_with_ai(request: ChatRequest, db: Session = Depends(get_db)):
     if not GEMINI_API_KEY: return {"reply": "⚠️ **System Error:** GEMINI_API_KEY is missing."}
-
-    clients = db.query(models.Client).all()
-    portfolios = db.query(models.Portfolio).all()
-    meetings = db.query(models.Meeting).all()
     today_date = datetime.utcnow().strftime('%Y-%m-%d')
-
-    client_lines = []
-    for c in clients:
-        c_portfolios = [p for p in portfolios if p.client_id == c.id]
-        c_meetings = [m for m in meetings if m.client_id == c.id]
-        c_aum = sum(p.value for p in c_portfolios)
-        c_mtgs = "; ".join([m.datetime.strftime("%d %b %Y %H:%M") for m in c_meetings]) or "None"
-        client_lines.append(f"• {c.name} | Email: {c.email} | Phone: {c.phone} | Profile: {c.investment_profile} | AUM: ${c_aum:,.2f} | Meetings: {c_mtgs}")
-
-    client_block = "\n".join(client_lines) if client_lines else "(No clients yet)"
 
     system_instruction = f"""You are Pro Finance AI, an expert wealth management assistant.
     Today's date is {today_date}.
     
-    FIRM DATABASE:
-    {client_block}
-    
     RULES:
     1. Answer finance questions expertly and maintain context from the user's previous messages.
-    2. Read data directly from the FIRM DATABASE.
+    2. NLU DATA RETRIEVAL: You MUST use the `analyze_financial_data` tool to fetch context before answering questions about clients. Map words like "risks" or "aggressive" to the high_risk intent.
     3. Use tools to Create, Update, or Delete records when requested.
     4. STRICT BOOKING RULE: If the user asks to book a meeting but does NOT specify exact date, time, and advisor, DO NOT use the tool yet. Ask them to clarify the missing details.
-    5. UI NAVIGATION: If the user asks to go to, navigate to, or asks 'how to go to' a page (like clients, portfolios, dashboard), you MUST use the `Maps_ui` tool to take them there directly!
+    5. UI NAVIGATION: If the user asks to go to a page, use the `Maps_ui` tool.
     """
 
-    book_meeting_tool = {"function_declarations": [{"name": "book_meeting", "description": "Book a meeting.", "parameters": {"type": "object", "properties": {"client_name": {"type": "string"}, "datetime_str": {"type": "string", "description": "YYYY-MM-DD HH:MM"}, "advisor": {"type": "string"}}, "required": ["client_name", "datetime_str", "advisor"]}}]}
-    register_client_tool = {"function_declarations": [{"name": "register_client", "description": "Register a new client.", "parameters": {"type": "object", "properties": {"name": {"type": "string"}, "email": {"type": "string"}, "phone": {"type": "string"}, "investment_profile": {"type": "string"}}, "required": ["name", "email", "phone", "investment_profile"]}}]}
-    create_portfolio_tool = {"function_declarations": [{"name": "create_portfolio", "description": "Create portfolio.", "parameters": {"type": "object", "properties": {"client_name": {"type": "string"}, "assets": {"type": "string", "description": "Calculate allocation based on risk_score (1-10). e.g., '90% Stocks, 10% Bonds'"}, "value": {"type": "number"}, "risk_score": {"type": "number"}}, "required": ["client_name", "assets", "value", "risk_score"]}}]}
-    update_client_tool = {"function_declarations": [{"name": "update_client", "description": "Update an existing client's details.", "parameters": {"type": "object", "properties": {"client_name": {"type": "string"}, "new_email": {"type": "string"}, "new_phone": {"type": "string"}, "new_profile": {"type": "string"}}, "required": ["client_name"]}}]}
-    delete_record_tool = {"function_declarations": [{"name": "delete_record", "description": "Delete a client, meeting, or portfolio.", "parameters": {"type": "object", "properties": {"client_name": {"type": "string"}, "record_type": {"type": "string", "description": "Must be 'Client', 'Portfolio', or 'Meeting'"}}, "required": ["client_name", "record_type"]}}]}
-    navigate_ui_tool = {"function_declarations": [{"name": "navigate_ui", "description": "Navigate the user's screen to a specific page.", "parameters": {"type": "object", "properties": {"page": {"type": "string", "description": "Allowed values: dashboard, clients, portfolios, services, meetings"}}, "required": ["page"]}}]}
+    tools_config = [{
+        "function_declarations": [
+            {
+                "name": "book_meeting",
+                "description": "Book a meeting.",
+                "parameters": {"type": "object", "properties": {"client_name": {"type": "string"}, "datetime_str": {"type": "string", "description": "YYYY-MM-DD HH:MM"}, "advisor": {"type": "string"}}, "required": ["client_name", "datetime_str", "advisor"]}
+            },
+            {
+                "name": "register_client",
+                "description": "Register a new client.",
+                "parameters": {"type": "object", "properties": {"name": {"type": "string"}, "email": {"type": "string"}, "phone": {"type": "string"}, "investment_profile": {"type": "string"}}, "required": ["name", "email", "phone", "investment_profile"]}
+            },
+            {
+                "name": "create_portfolio",
+                "description": "Create portfolio.",
+                "parameters": {
+                    "type": "object", 
+                    "properties": {
+                        "client_name": {"type": "string"}, 
+                        "assets": {"type": "string", "description": "Leave blank to auto-allocate based on risk score."}, 
+                        "value": {"type": "number"}, 
+                        "risk_score": {"type": "number"}
+                    }, 
+                    "required": ["client_name", "value", "risk_score"]
+                }
+            },
+            {
+                "name": "update_client",
+                "description": "Update an existing client's details.",
+                "parameters": {"type": "object", "properties": {"client_name": {"type": "string"}, "new_email": {"type": "string"}, "new_phone": {"type": "string"}, "new_profile": {"type": "string"}}, "required": ["client_name"]}
+            },
+            {
+                "name": "delete_record",
+                "description": "Delete a client, meeting, or portfolio.",
+                "parameters": {"type": "object", "properties": {"client_name": {"type": "string"}, "record_type": {"type": "string"}}, "required": ["client_name", "record_type"]}
+            },
+            {
+                "name": "navigate_ui",
+                "description": "Navigate the user's screen to a specific page.",
+                "parameters": {"type": "object", "properties": {"page": {"type": "string", "description": "Allowed values: dashboard, clients, portfolios, services, meetings"}}, "required": ["page"]}
+            },
+            {
+                "name": "analyze_financial_data",
+                "description": "Query the database based on the user's natural language intent.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "intent": {
+                            "type": "string", 
+                            "description": "Must be one of: 'all_clients', 'high_risk_clients' (risky, aggressive, takes risks), 'top_portfolios' (wealthiest, richest), 'upcoming_meetings', 'specific_client_search'"
+                        },
+                        "search_term": {"type": "string"}
+                    },
+                    "required": ["intent"]
+                }
+            }
+        ]
+    }]
 
-    # NEW: Format history for Gemini API
-    formatted_history = []
-    for msg in request.history:
-        role = "model" if msg.role == "ai" else "user"
-        formatted_history.append({"role": role, "parts": [msg.content]})
+    formatted_history = [{"role": "model" if msg.role == "ai" else "user", "parts": [msg.content]} for msg in request.history]
 
     try:
         model = genai.GenerativeModel(
             model_name="gemini-2.5-flash",
             system_instruction=system_instruction,
-            tools=[book_meeting_tool, register_client_tool, create_portfolio_tool, update_client_tool, delete_record_tool, navigate_ui_tool]
+            tools=tools_config
         )
 
-        # NEW: Initialize chat session with history instead of standalone generate_content
         chat_session = model.start_chat(history=formatted_history)
         response = chat_session.send_message(request.message)
         
         if response.candidates and response.candidates[0].content.parts:
-            part = response.candidates[0].content.parts[0]
-            
-            if part.function_call:
-                fc = part.function_call
-                args = fc.args
+            for part in response.candidates[0].content.parts:
                 
-                if fc.name == "navigate_ui":
-                    page = args.get("page", "dashboard").lower()
-                    return {"reply": f"Taking you to the {page.capitalize()} page! 🧭NAV:{page}"}
-
-                client_name = args.get("client_name", "")
-                client = db.query(models.Client).filter(models.Client.name.ilike(f"%{client_name}%")).first()
-                if not client and " " in client_name:
-                    client = db.query(models.Client).filter(models.Client.name.ilike(f"%{client_name.split()[0]}%")).first()
-
-                if fc.name == "book_meeting":
-                    if not client: return {"reply": f"⚠️ Could not find client '{client_name}'."}
-                    try: parsed_dt = datetime.strptime(args.get("datetime_str")[:16].replace("T", " "), "%Y-%m-%d %H:%M")
-                    except ValueError: return {"reply": "⚠️ I couldn't understand the time format."}
-                    db.add(models.Meeting(client_id=client.id, datetime=parsed_dt, advisor=args.get("advisor", "Admin")))
-                    db.commit()
-                    return {"reply": f"✅ **Meeting Booked!** Scheduled for {client.name} on {parsed_dt.strftime('%d %b %Y at %H:%M')}."}
-
-                elif fc.name == "register_client":
-                    if db.query(models.Client).filter(models.Client.email == args.get("email")).first():
-                        return {"reply": f"⚠️ A client with email {args.get('email')} already exists."}
-                    db.add(models.Client(name=args.get("name"), email=args.get("email"), phone=args.get("phone"), investment_profile=args.get("investment_profile")))
-                    db.commit()
-                    return {"reply": f"✅ **Client Registered!** Added {args.get('name')} to the database."}
-
-                elif fc.name == "create_portfolio":
-                    if not client: return {"reply": f"⚠️ Could not find client '{client_name}'."}
-                    db.add(models.Portfolio(client_id=client.id, assets=args.get("assets"), value=float(args.get("value")), risk_score=float(args.get("risk_score"))))
-                    db.commit()
-                    return {"reply": f"✅ **Portfolio Created!** Added to {client.name}'s profile."}
-
-                elif fc.name == "update_client":
-                    if not client: return {"reply": f"⚠️ Could not find client '{client_name}'."}
-                    if args.get("new_email"): client.email = args.get("new_email")
-                    if args.get("new_phone"): client.phone = args.get("new_phone")
-                    if args.get("new_profile"): client.investment_profile = args.get("new_profile")
-                    db.commit()
-                    return {"reply": f"✅ **Client Updated!** Modifications saved for {client.name}."}
-
-                elif fc.name == "delete_record":
-                    if not client: return {"reply": f"⚠️ Could not find client '{client_name}'."}
-                    r_type = args.get("record_type")
+                if part.function_call:
+                    fc = part.function_call
                     
-                    if r_type == "Client":
-                        db.query(models.Portfolio).filter(models.Portfolio.client_id == client.id).delete()
-                        db.query(models.Meeting).filter(models.Meeting.client_id == client.id).delete()
-                        db.delete(client)
+                    args = {}
+                    if hasattr(fc.args, "items"):
+                        for k, v in fc.args.items(): args[k] = v
+                    else:
+                        args = dict(fc.args)
+                    
+                    # ── NLU DATA ROUTING ───────────────────────────────────────────
+                    if fc.name == "analyze_financial_data":
+                        intent = args.get("intent", "all_clients")
+                        search_term = args.get("search_term", "")
+                        
+                        if intent == "specific_client_search":
+                            client = db.query(models.Client).filter(models.Client.name.ilike(f"%{search_term}%")).first()
+                            if client:
+                                port = db.query(models.Portfolio).filter(models.Portfolio.client_id == client.id).first()
+                                port_val = f"${float(port.value):,.2f}" if port else "No portfolio"
+                                return {"reply": f"📊 **Data Found for {search_term}:**\n- **Name:** {client.name}\n- **Email:** {client.email}\n- **Profile:** {client.investment_profile}\n- **AUM:** {port_val}"}
+                            return {"reply": f"⚠️ I couldn't find a client matching '{search_term}'."}
+                            
+                        elif intent == "high_risk_clients":
+                            all_ports = db.query(models.Portfolio).all()
+                            risky_ports = [p for p in all_ports if p.risk_score is not None and float(p.risk_score) >= 7.0]
+                            
+                            if not risky_ports: return {"reply": "✅ There are currently no high-risk clients (score >= 7.0)."}
+                            result = "🚨 **High Risk Portfolios:**\n"
+                            for p in risky_ports:
+                                c = db.query(models.Client).filter(models.Client.id == p.client_id).first()
+                                if c: result += f"- **{c.name}:** Risk {float(p.risk_score)}/10 | AUM: ${float(p.value):,.2f}\n"
+                            return {"reply": result}
+                            
+                        elif intent == "top_portfolios":
+                            all_ports = db.query(models.Portfolio).all()
+                            sorted_ports = sorted(all_ports, key=lambda x: float(x.value) if x.value is not None else 0, reverse=True)[:3]
+                            
+                            if not sorted_ports: return {"reply": "⚠️ No portfolios exist in the database yet."}
+                            result = "💰 **Top Portfolios by AUM:**\n"
+                            for p in sorted_ports:
+                                c = db.query(models.Client).filter(models.Client.id == p.client_id).first()
+                                if c: result += f"- **{c.name}:** ${float(p.value):,.2f}\n"
+                            return {"reply": result}
+
+                        elif intent == "upcoming_meetings":
+                            mtgs = db.query(models.Meeting).order_by(models.Meeting.datetime.asc()).limit(5).all()
+                            if not mtgs: return {"reply": "📅 You have no upcoming meetings scheduled."}
+                            result = "📅 **Upcoming Meetings:**\n"
+                            for m in mtgs:
+                                c = db.query(models.Client).filter(models.Client.id == m.client_id).first()
+                                name = c.name if c else "Unknown Client"
+                                result += f"- **{name}** with {m.advisor} on {m.datetime.strftime('%d %b %Y at %H:%M')}\n"
+                            return {"reply": result}
+                            
+                        else:
+                            clients = db.query(models.Client).all()
+                            return {"reply": f"📂 **Database Summary:** You have {len(clients)} registered clients."}
+
+                    # ── UI & CRUD ACTIONS ──────────────────────────────────────────
+                    elif fc.name == "navigate_ui":
+                        page = args.get("page", "dashboard").lower()
+                        return {"reply": f"Taking you to the {page.capitalize()} page! 🧭NAV:{page}"}
+
+                    client_name = args.get("client_name", "")
+                    client = db.query(models.Client).filter(models.Client.name.ilike(f"%{client_name}%")).first()
+
+                    if fc.name == "book_meeting":
+                        if not client: return {"reply": f"⚠️ Could not find client '{client_name}'."}
+                        try: parsed_dt = datetime.strptime(args.get("datetime_str", "")[:16].replace("T", " "), "%Y-%m-%d %H:%M")
+                        except ValueError: return {"reply": "⚠️ I couldn't understand the time format."}
+                        db.add(models.Meeting(client_id=client.id, datetime=parsed_dt, advisor=args.get("advisor", "Admin")))
                         db.commit()
-                        return {"reply": f"🗑️ **Client Deleted!** Removed {client.name} and all related portfolios/meetings."}
-                    
-                    elif r_type == "Portfolio":
-                        port = db.query(models.Portfolio).filter(models.Portfolio.client_id == client.id).first()
-                        if port: db.delete(port); db.commit(); return {"reply": f"🗑️ **Portfolio Deleted!** Removed portfolio for {client.name}."}
-                        return {"reply": f"⚠️ {client.name} does not have a portfolio to delete."}
-                    
-                    elif r_type == "Meeting":
-                        mtg = db.query(models.Meeting).filter(models.Meeting.client_id == client.id).first()
-                        if mtg: db.delete(mtg); db.commit(); return {"reply": f"🗑️ **Meeting Deleted!** Canceled the meeting for {client.name}."}
-                        return {"reply": f"⚠️ {client.name} does not have any upcoming meetings."}
+                        return {"reply": f"✅ **Meeting Booked!** Scheduled for {client.name} on {parsed_dt.strftime('%d %b %Y at %H:%M')}."}
 
-            if part.text:
-                return {"reply": part.text}
+                    elif fc.name == "register_client":
+                        db.add(models.Client(name=args.get("name"), email=args.get("email"), phone=args.get("phone"), investment_profile=args.get("investment_profile")))
+                        db.commit()
+                        return {"reply": f"✅ **Client Registered!** Added {args.get('name')} to the database."}
+
+                    elif fc.name == "create_portfolio":
+                        if not client: return {"reply": f"⚠️ Could not find client '{client_name}'."}
+                        
+                        # ── STRICT STOCKS/BONDS CALCULATOR ──
+                        risk = float(args.get("risk_score", 1))
+                        risk = max(0.0, min(10.0, risk)) # Force scale exactly between 0 and 10
+                        assets = args.get("assets", "")
+                        
+                        if not assets:
+                            stock_pct = int(risk * 10)
+                            bond_pct = 100 - stock_pct
+                            
+                            if stock_pct == 0:
+                                assets = "100% Bonds"
+                            elif bond_pct == 0:
+                                assets = "100% Stocks"
+                            else:
+                                assets = f"{stock_pct}% Stocks, {bond_pct}% Bonds"
+
+                        db.add(models.Portfolio(client_id=client.id, assets=assets, value=float(args.get("value", 0)), risk_score=risk))
+                        db.commit()
+                        return {"reply": f"✅ **Portfolio Created!** Added to {client.name}'s profile with calculated assets: {assets}."}
+
+                    elif fc.name == "update_client":
+                        if not client: return {"reply": f"⚠️ Could not find client '{client_name}'."}
+                        if args.get("new_email"): client.email = args.get("new_email")
+                        if args.get("new_phone"): client.phone = args.get("new_phone")
+                        if args.get("new_profile"): client.investment_profile = args.get("new_profile")
+                        db.commit()
+                        return {"reply": f"✅ **Client Updated!** Modifications saved for {client.name}."}
+
+                    elif fc.name == "delete_record":
+                        if not client: return {"reply": f"⚠️ Could not find client '{client_name}'."}
+                        
+                        r_type = str(args.get("record_type", "")).lower().strip()
+                        
+                        if "client" in r_type:
+                            db.query(models.Portfolio).filter(models.Portfolio.client_id == client.id).delete()
+                            db.query(models.Meeting).filter(models.Meeting.client_id == client.id).delete()
+                            db.delete(client)
+                            db.commit()
+                            return {"reply": f"🗑️ **Client Deleted!** Removed {client.name} and related records."}
+                        
+                        elif "portfolio" in r_type:
+                            deleted = db.query(models.Portfolio).filter(models.Portfolio.client_id == client.id).delete()
+                            db.commit()
+                            if deleted: return {"reply": f"🗑️ **Portfolio Deleted!** Removed portfolio for {client.name}."}
+                            return {"reply": f"⚠️ {client.name} doesn't have a portfolio to delete."}
+                        
+                        elif "meeting" in r_type:
+                            deleted = db.query(models.Meeting).filter(models.Meeting.client_id == client.id).delete()
+                            db.commit()
+                            if deleted: return {"reply": f"🗑️ **Meeting Deleted!** Canceled the meeting for {client.name}."}
+                            return {"reply": f"⚠️ {client.name} doesn't have any upcoming meetings."}
+                        else:
+                            return {"reply": f"⚠️ Please specify whether you want to delete the Client, Portfolio, or Meeting."}
+                    
+                    else:
+                        return {"reply": f"⚠️ **AI Error:** I tried to use an unrecognized tool called `{fc.name}`. Please ask your question differently."}
+
+                elif part.text:
+                    return {"reply": part.text}
 
         return {"reply": "⚠️ I processed your request, but generated no text response."}
 
