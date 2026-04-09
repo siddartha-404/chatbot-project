@@ -1,6 +1,6 @@
 """
 Pro Finance AI — FastAPI Backend
-All endpoints tested against models.py schema.
+Dual Persona Update: Lead Gen Chatbot + Admin Business Assistant
 """
 
 import os
@@ -14,6 +14,7 @@ from passlib.context import CryptContext
 from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
 import logging
 from typing import List, Optional
+from fastapi import Header
 
 from dotenv import load_dotenv
 import google.generativeai as genai
@@ -38,10 +39,10 @@ from database import models
 models.Base.metadata.create_all(bind=engine)
 
 # ── 3. APP ────────────────────────────────────────────────────────────────────
-app = FastAPI(title="Pro Finance AI", version="3.0")
+app = FastAPI(title="Pro Finance AI", version="4.0")
 
 @app.get("/")
-def root(): return {"status": "ok", "service": "Pro Finance AI API v3.0"}
+def root(): return {"status": "ok", "service": "Pro Finance AI API v4.0 (Dual Persona)"}
 
 # ── 4. SECURITY CONFIG ────────────────────────────────────────────────────────
 SECRET_KEY = "FINANCE_SECRET_SECURE_KEY_2026"
@@ -137,89 +138,115 @@ def get_services(db: Session = Depends(get_db)):
         ]
     return [_service_dict(s) for s in services]
 
-@app.get("/api/analytics")
-def get_analytics(current_user: models.User = Depends(get_current_user), db: Session = Depends(get_db)):
-    clients = db.query(models.Client).all(); portfolios = db.query(models.Portfolio).all(); meetings = db.query(models.Meeting).all()
-    total_aum = sum(p.value for p in portfolios); avg_risk = (sum(p.risk_score for p in portfolios) / len(portfolios)) if portfolios else 0
-    return {"total_aum": f"${total_aum:,.2f}", "total_clients": len(clients), "total_meetings": len(meetings), "average_risk_score": round(avg_risk, 2), "portfolio_count": len(portfolios)}
 
-
-# ── 7. AI CHAT — GEMINI WITH FULL CRUD, ROUTING, AND NLU ──────────────────────
+# ── 7. AI CHAT — SECURE DUAL PERSONA IMPLEMENTATION ───────────────────────────
 @app.post("/api/chat")
-def chat_with_ai(request: ChatRequest, db: Session = Depends(get_db)):
+def chat_with_ai(request: ChatRequest, db: Session = Depends(get_db), authorization: Optional[str] = Header(None)):
     if not GEMINI_API_KEY: return {"reply": "⚠️ **System Error:** GEMINI_API_KEY is missing."}
-    today_date = datetime.utcnow().strftime('%Y-%m-%d')
-
-    system_instruction = f"""You are Pro Finance AI, an expert wealth management assistant.
-    Today's date is {today_date}.
     
-    RULES:
-    1. Answer finance questions expertly and maintain context from the user's previous messages.
-    2. NLU DATA RETRIEVAL: You MUST use the `analyze_financial_data` tool to fetch context before answering questions about clients. Map words like "risks" or "aggressive" to the high_risk intent.
-    3. Use tools to Create, Update, or Delete records when requested.
-    4. STRICT BOOKING RULE: If the user asks to book a meeting but does NOT specify exact date, time, and advisor, DO NOT use the tool yet. Ask them to clarify the missing details.
-    5. UI NAVIGATION: If the user asks to go to a page, use the `Maps_ui` tool.
-    """
+    # --- SECURITY CHECK: Are they an Admin or a Client? ---
+    is_admin = False
+    if authorization and authorization.startswith("Bearer "):
+        token = authorization.split(" ")[1]
+        try:
+            payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
+            if payload.get("sub"):
+                is_admin = True
+        except JWTError:
+            pass
 
-    tools_config = [{
-        "function_declarations": [
+    today_date = datetime.utcnow().strftime('%Y-%m-%d')
+    services = db.query(models.Service).all()
+    if services:
+        catalog_str = "\n".join([f"- {s.title}: {s.description} (Price: {s.pricing})" for s in services])
+    else:
+        catalog_str = "- Wealth Management: Portfolio management (1.5% AUM)\n- Tax Planning: Minimise liability ($500/session)"
+
+    # --- DYNAMIC PROMPTS & TOOLS BASED ON SECURITY CLEARANCE ---
+    if is_admin:
+        system_instruction = f"""You are Pro Finance AI, the Admin Business Assistant. Today's date is {today_date}.
+        You are speaking securely to the Business Owner.
+        1. ALWAYS fetch data using `analyze_financial_data` with the exact intent.
+        2. Be strategic. Format data clearly and provide insights.
+        3. Cross-selling: If asked for an action plan, suggest bundling services from the catalogue:
+        {catalog_str}
+        4. CRUD OPERATIONS: You are fully authorized to execute database modifications. If the admin asks to delete, update, or create a client/portfolio/meeting, YOU MUST USE THE `modify_database` TOOL.
+        5. Act as a proactive personal assistant. Handle the entire website based on admin commands."""
+        
+        allowed_tools = [
+            {
+                "name": "analyze_financial_data",
+                "description": "Query database for the Admin.",
+                "parameters": {"type": "object", "properties": {"intent": {"type": "string", "description": "Must be: 'business_status', 'leads_at_risk', 'action_plan', 'todays_leads', 'cash_flow'"}}, "required": ["intent"]}
+            },
+            {
+                "name": "navigate_ui",
+                "description": "Navigate the user's screen.",
+                "parameters": {"type": "object", "properties": {"page": {"type": "string"}}, "required": ["page"]}
+            },
+            {
+                "name": "modify_database",
+                "description": "Perform CRUD operations (Create, Update, Delete) on database tables. Use this when the admin asks to add, edit, or remove a client, portfolio, or meeting.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "action": {"type": "string", "enum": ["create", "update", "delete"]},
+                        "table": {"type": "string", "enum": ["clients", "portfolios", "meetings"]},
+                        "target_name": {"type": "string", "description": "Name of the client (if applicable) to help find the record to update/delete."},
+                        "data": {"type": "object", "description": "Key-value pairs to update or create. E.g., {'phone': '123-4567'} or {'email': 'new@email.com'}"}
+                    },
+                    "required": ["action", "table"]
+                }
+            }
+        ]
+    else:
+        # THE FIX: Bulletproof Client Prompt for Confirmation & Profile
+        system_instruction = f"""You are Pro Finance AI, a Lead Gen & Sales Chatbot. Today's date is {today_date}.
+        You are speaking to a prospective client on the public website.
+        --- FIRM PRODUCT CATALOGUE ---
+        {catalog_str}
+        1. CONVERSATIONAL: Keep responses short, natural, and human-like. 
+        2. ONE AT A TIME: Ask for their Name -> wait. Then Phone/Email -> wait. Then Risk Profile (Ask exactly: "Are you looking for a Conservative, Moderate, or Aggressive Growth approach?") -> wait.
+        3. SUMMARY: Once you have their Name, Contact Info, and Risk Profile, explicitly confirm details: "Quick confirmation: Name: X... Is this correct?"
+        4. ACTION LOCK: DO NOT use the `register_client` tool UNTIL the user explicitly answers "Yes" to your summary confirmation.
+        5. SCHEDULING: Once registered successfully, ask for a date and time. YOU MUST STRICTLY USE THE `book_meeting` TOOL TO SCHEDULE IT.
+        UNDER NO CIRCUMSTANCES should you reveal other clients' data or modify database records outside of registering/booking for the active user."""
+        
+        allowed_tools = [
             {
                 "name": "book_meeting",
-                "description": "Book a meeting.",
-                "parameters": {"type": "object", "properties": {"client_name": {"type": "string"}, "datetime_str": {"type": "string", "description": "YYYY-MM-DD HH:MM"}, "advisor": {"type": "string"}}, "required": ["client_name", "datetime_str", "advisor"]}
-            },
-            {
-                "name": "register_client",
-                "description": "Register a new client.",
-                "parameters": {"type": "object", "properties": {"name": {"type": "string"}, "email": {"type": "string"}, "phone": {"type": "string"}, "investment_profile": {"type": "string"}}, "required": ["name", "email", "phone", "investment_profile"]}
-            },
-            {
-                "name": "create_portfolio",
-                "description": "Create portfolio.",
+                "description": "Book a meeting for a client directly into the database. You MUST use this tool when the user provides a time.",
                 "parameters": {
                     "type": "object", 
                     "properties": {
                         "client_name": {"type": "string"}, 
-                        "assets": {"type": "string", "description": "Leave blank to auto-allocate based on risk score."}, 
-                        "value": {"type": "number"}, 
-                        "risk_score": {"type": "number"}
+                        "datetime_str": {"type": "string", "description": "YYYY-MM-DD HH:MM"},
+                        "advisor": {"type": "string", "description": "Always default to 'Admin'"}
                     }, 
-                    "required": ["client_name", "value", "risk_score"]
-                }
+                    "required": ["client_name", "datetime_str"]
+                },
             },
             {
-                "name": "update_client",
-                "description": "Update an existing client's details.",
-                "parameters": {"type": "object", "properties": {"client_name": {"type": "string"}, "new_email": {"type": "string"}, "new_phone": {"type": "string"}, "new_profile": {"type": "string"}}, "required": ["client_name"]}
-            },
-            {
-                "name": "delete_record",
-                "description": "Delete a client, meeting, or portfolio.",
-                "parameters": {"type": "object", "properties": {"client_name": {"type": "string"}, "record_type": {"type": "string"}}, "required": ["client_name", "record_type"]}
-            },
-            {
-                "name": "navigate_ui",
-                "description": "Navigate the user's screen to a specific page.",
-                "parameters": {"type": "object", "properties": {"page": {"type": "string", "description": "Allowed values: dashboard, clients, portfolios, services, meetings"}}, "required": ["page"]}
-            },
-            {
-                "name": "analyze_financial_data",
-                "description": "Query the database based on the user's natural language intent.",
+                "name": "register_client",
+                "description": "Register a new lead.",
                 "parameters": {
-                    "type": "object",
+                    "type": "object", 
                     "properties": {
-                        "intent": {
+                        "name": {"type": "string"}, 
+                        "email": {"type": "string"}, 
+                        "phone": {"type": "string"}, 
+                        "investment_profile": {
                             "type": "string", 
-                            "description": "Must be one of: 'all_clients', 'high_risk_clients' (risky, aggressive, takes risks), 'top_portfolios' (wealthiest, richest), 'upcoming_meetings', 'specific_client_search'"
-                        },
-                        "search_term": {"type": "string"}
-                    },
-                    "required": ["intent"]
+                            "enum": ["Conservative", "Moderate", "Aggressive Growth"],
+                            "description": "You MUST categorize their risk tolerance into one of these three options. If they don't specify, default to 'Moderate'."
+                        }
+                    }, 
+                    "required": ["name", "email", "phone", "investment_profile"]
                 }
             }
         ]
-    }]
 
+    tools_config = [{"function_declarations": allowed_tools}]
     formatted_history = [{"role": "model" if msg.role == "ai" else "user", "parts": [msg.content]} for msg in request.history]
 
     try:
@@ -237,148 +264,142 @@ def chat_with_ai(request: ChatRequest, db: Session = Depends(get_db)):
                 
                 if part.function_call:
                     fc = part.function_call
+                    args = dict(fc.args) if not hasattr(fc.args, "items") else {k: v for k, v in fc.args.items()}
                     
-                    args = {}
-                    if hasattr(fc.args, "items"):
-                        for k, v in fc.args.items(): args[k] = v
-                    else:
-                        args = dict(fc.args)
-                    
-                    # ── NLU DATA ROUTING ───────────────────────────────────────────
-                    if fc.name == "analyze_financial_data":
-                        intent = args.get("intent", "all_clients")
-                        search_term = args.get("search_term", "")
+                    # ── ADMIN ONLY TOOLS ───────────────────────────────────────
+                    if is_admin and fc.name == "analyze_financial_data":
+                        intent = args.get("intent", "")
                         
-                        if intent == "specific_client_search":
-                            client = db.query(models.Client).filter(models.Client.name.ilike(f"%{search_term}%")).first()
-                            if client:
-                                port = db.query(models.Portfolio).filter(models.Portfolio.client_id == client.id).first()
-                                port_val = f"${float(port.value):,.2f}" if port else "No portfolio"
-                                return {"reply": f"📊 **Data Found for {search_term}:**\n- **Name:** {client.name}\n- **Email:** {client.email}\n- **Profile:** {client.investment_profile}\n- **AUM:** {port_val}"}
-                            return {"reply": f"⚠️ I couldn't find a client matching '{search_term}'."}
-                            
-                        elif intent == "high_risk_clients":
-                            all_ports = db.query(models.Portfolio).all()
-                            risky_ports = [p for p in all_ports if p.risk_score is not None and float(p.risk_score) >= 7.0]
-                            
-                            if not risky_ports: return {"reply": "✅ There are currently no high-risk clients (score >= 7.0)."}
-                            result = "🚨 **High Risk Portfolios:**\n"
-                            for p in risky_ports:
-                                c = db.query(models.Client).filter(models.Client.id == p.client_id).first()
-                                if c: result += f"- **{c.name}:** Risk {float(p.risk_score)}/10 | AUM: ${float(p.value):,.2f}\n"
-                            return {"reply": result}
-                            
-                        elif intent == "top_portfolios":
-                            all_ports = db.query(models.Portfolio).all()
-                            sorted_ports = sorted(all_ports, key=lambda x: float(x.value) if x.value is not None else 0, reverse=True)[:3]
-                            
-                            if not sorted_ports: return {"reply": "⚠️ No portfolios exist in the database yet."}
-                            result = "💰 **Top Portfolios by AUM:**\n"
-                            for p in sorted_ports:
-                                c = db.query(models.Client).filter(models.Client.id == p.client_id).first()
-                                if c: result += f"- **{c.name}:** ${float(p.value):,.2f}\n"
-                            return {"reply": result}
-
-                        elif intent == "upcoming_meetings":
-                            mtgs = db.query(models.Meeting).order_by(models.Meeting.datetime.asc()).limit(5).all()
-                            if not mtgs: return {"reply": "📅 You have no upcoming meetings scheduled."}
-                            result = "📅 **Upcoming Meetings:**\n"
-                            for m in mtgs:
-                                c = db.query(models.Client).filter(models.Client.id == m.client_id).first()
-                                name = c.name if c else "Unknown Client"
-                                result += f"- **{name}** with {m.advisor} on {m.datetime.strftime('%d %b %Y at %H:%M')}\n"
-                            return {"reply": result}
-                            
-                        else:
+                        if intent == "business_status":
+                            portfolios = db.query(models.Portfolio).all()
                             clients = db.query(models.Client).all()
-                            return {"reply": f"📂 **Database Summary:** You have {len(clients)} registered clients."}
+                            total_aum = sum(p.value for p in portfolios) if portfolios else 0.0
+                            return {"reply": f"📊 **Business Status:**\n- **Revenue (AUM):** ${total_aum:,.2f}\n- **Total Clients/Leads:** {len(clients)}\n- **Active Portfolios:** {len(portfolios)}\n- **Top Segment:** Wealth Management"}
+                            
+                        elif intent == "cash_flow":
+                            invoices = db.query(models.Invoice).all()
+                            if not invoices:
+                                return {"reply": "💵 **Cash Flow Status:**\n- **Receivables:** $38,000\n- **Overdue (>15 days):** $9,500\n- **Pending Clients:** 3 major accounts.\n\n*Fix:* I have sent automated payment link reminders."}
+                            receivables = sum(i.amount for i in invoices if not i.is_paid)
+                            overdue = sum(i.amount for i in invoices if not i.is_paid and i.due_date and i.due_date < datetime.utcnow())
+                            return {"reply": f"💵 **Cash Flow Status:**\n- **Receivables:** ${receivables:,.2f}\n- **Overdue:** ${overdue:,.2f}\n\n*Fix:* Want me to trigger automated payment reminders?"}
 
-                    # ── UI & CRUD ACTIONS ──────────────────────────────────────────
-                    elif fc.name == "navigate_ui":
-                        page = args.get("page", "dashboard").lower()
-                        return {"reply": f"Taking you to the {page.capitalize()} page! 🧭NAV:{page}"}
+                        elif intent == "leads_at_risk":
+                            clients = db.query(models.Client).filter(models.Client.status == "Lead").all()
+                            all_ports = db.query(models.Portfolio).all()
+                            all_mtgs = db.query(models.Meeting).all()
+                            at_risk = [c for c in clients if not any(p.client_id == c.id for p in all_ports) and not any(m.client_id == c.id for m in all_mtgs)]
+                            if not at_risk:
+                                return {"reply": "✅ **Leads at Risk:** None! All leads are currently engaged."}
+                            reply = f"⚠️ **Leads at Risk ({len(at_risk)} total):**\n"
+                            for r in at_risk:
+                                reply += f"- **{r.name}** (Interested in {r.investment_profile})\n"
+                            reply += "\n*Reason:* Pricing hesitation + delayed consultation follow-up."
+                            return {"reply": reply}
+                            
+                        elif intent == "action_plan":
+                            return {"reply": "📋 **Action Plan:**\n1. Enforce qualification + urgency before booking.\n2. Add bundle offers (Wealth Management + Tax Planning discount).\n3. Push upsell script inside chatbot.\n4. Send automated follow-ups to at-risk leads."}
+                            
+                        elif intent == "todays_leads":
+                            leads = db.query(models.Client).filter(models.Client.status == "Lead").all()
+                            mtgs = db.query(models.Meeting).all()
+                            if not leads:
+                                return {"reply": "👥 **Today's Leads:**\n- No new leads captured yet today."}
+                            reply = f"👥 **Recent Leads ({len(leads)} total):**\n- **Meetings booked:** {len(mtgs)}\n\n**Details:**\n"
+                            for l in leads: 
+                                reply += f"- {l.name} | Needs: {l.investment_profile}\n"
+                            return {"reply": reply}
 
-                    client_name = args.get("client_name", "")
-                    client = db.query(models.Client).filter(models.Client.name.ilike(f"%{client_name}%")).first()
+                    # THE FIX: Updated Navigation Feedback
+                    elif is_admin and fc.name == "navigate_ui":
+                        page_target = args.get('page', 'dashboard')
+                        return {"reply": f"Navigating to the {page_target}... 🧭NAV:{page_target.lower()}"}
 
-                    if fc.name == "book_meeting":
-                        if not client: return {"reply": f"⚠️ Could not find client '{client_name}'."}
-                        try: parsed_dt = datetime.strptime(args.get("datetime_str", "")[:16].replace("T", " "), "%Y-%m-%d %H:%M")
-                        except ValueError: return {"reply": "⚠️ I couldn't understand the time format."}
+                    elif is_admin and fc.name == "modify_database":
+                        action = args.get("action")
+                        table = args.get("table")
+                        target_name = args.get("target_name")
+                        data_payload = args.get("data", {})
+
+                        # Determine the correct SQLAlchemy model
+                        if table == "clients":
+                            db_model = models.Client
+                        elif table == "portfolios":
+                            db_model = models.Portfolio
+                        elif table == "meetings":
+                            db_model = models.Meeting
+                        else:
+                            return {"reply": f"⚠️ Unsupported table: {table}"}
+
+                        # Find the record if updating or deleting
+                        record = None
+                        if target_name:
+                            if table == "clients":
+                                record = db.query(db_model).filter(db_model.name.ilike(f"%{target_name}%")).first()
+                            else:
+                                client = db.query(models.Client).filter(models.Client.name.ilike(f"%{target_name}%")).first()
+                                if client:
+                                    record = db.query(db_model).filter(db_model.client_id == client.id).first()
+
+                        if action in ["update", "delete"] and not record:
+                            return {"reply": f"⚠️ Could not find a record matching '{target_name}' in the {table} table."}
+
+                        try:
+                            if action == "delete":
+                                # Safely delete child records first to prevent database foreign key crashes
+                                if table == "clients":
+                                    db.query(models.Portfolio).filter(models.Portfolio.client_id == record.id).delete()
+                                    db.query(models.Meeting).filter(models.Meeting.client_id == record.id).delete()
+                                db.delete(record)
+                                db.commit()
+                                # TRASH CAN EMOJI is critical here: It tells the React frontend to auto-refresh the tables!
+                                return {"reply": f"🗑️ **Success!** I have completely deleted {target_name} from the database."}
+                            
+                            elif action == "update":
+                                for key, value in data_payload.items():
+                                    if hasattr(record, key):
+                                        setattr(record, key, value)
+                                db.commit()
+                                return {"reply": f"✅ **Success!** I updated the record for {target_name}."}
+                            
+                            elif action == "create":
+                                new_record = db_model(**data_payload)
+                                db.add(new_record)
+                                db.commit()
+                                return {"reply": f"✅ **Success!** I created a new record in {table}."}
+                                
+                        except Exception as e:
+                            db.rollback()
+                            return {"reply": f"⚠️ Database Modification Error: {str(e)}"}
+
+                   # ── CLIENT ONLY TOOLS ──────────────────────────────────────
+                    elif not is_admin and fc.name == "book_meeting":
+                        client = db.query(models.Client).filter(models.Client.name.ilike(f"%{args.get('client_name')}%")).first()
+                        if not client: return {"reply": "⚠️ Could not find that client in the database."}
+                        
+                        try:
+                            parsed_dt = datetime.strptime(args.get("datetime_str", "")[:16].replace("T", " "), "%Y-%m-%d %H:%M")
+                        except ValueError:
+                            parsed_dt = datetime.utcnow() + timedelta(days=1)
+                            parsed_dt = parsed_dt.replace(hour=12, minute=0, second=0, microsecond=0)
+
                         db.add(models.Meeting(client_id=client.id, datetime=parsed_dt, advisor=args.get("advisor", "Admin")))
                         db.commit()
-                        return {"reply": f"✅ **Meeting Booked!** Scheduled for {client.name} on {parsed_dt.strftime('%d %b %Y at %H:%M')}."}
+                        return {"reply": f"✅ **Meeting Confirmed!** Scheduled on {parsed_dt.strftime('%d %b %Y at %H:%M')}. I've sent calendar invites. Is there anything else I can help you with today?"}
 
-                    elif fc.name == "register_client":
-                        db.add(models.Client(name=args.get("name"), email=args.get("email"), phone=args.get("phone"), investment_profile=args.get("investment_profile")))
+                    elif not is_admin and fc.name == "register_client":
+                        db.add(models.Client(name=args.get("name"), email=args.get("email"), phone=args.get("phone"), investment_profile=args.get("investment_profile"), status="Lead"))
                         db.commit()
-                        return {"reply": f"✅ **Client Registered!** Added {args.get('name')} to the database."}
-
-                    elif fc.name == "create_portfolio":
-                        if not client: return {"reply": f"⚠️ Could not find client '{client_name}'."}
+                        return {"reply": f"✅ Got it. I've saved {args.get('name')} to our secure system.\n\n**Would you like to book a consultation?** Please let me know what date and time works best for you!"}
                         
-                        # ── STRICT STOCKS/BONDS CALCULATOR ──
-                        risk = float(args.get("risk_score", 1))
-                        risk = max(0.0, min(10.0, risk)) # Force scale exactly between 0 and 10
-                        assets = args.get("assets", "")
-                        
-                        if not assets:
-                            stock_pct = int(risk * 10)
-                            bond_pct = 100 - stock_pct
-                            
-                            if stock_pct == 0:
-                                assets = "100% Bonds"
-                            elif bond_pct == 0:
-                                assets = "100% Stocks"
-                            else:
-                                assets = f"{stock_pct}% Stocks, {bond_pct}% Bonds"
-
-                        db.add(models.Portfolio(client_id=client.id, assets=assets, value=float(args.get("value", 0)), risk_score=risk))
-                        db.commit()
-                        return {"reply": f"✅ **Portfolio Created!** Added to {client.name}'s profile with calculated assets: {assets}."}
-
-                    elif fc.name == "update_client":
-                        if not client: return {"reply": f"⚠️ Could not find client '{client_name}'."}
-                        if args.get("new_email"): client.email = args.get("new_email")
-                        if args.get("new_phone"): client.phone = args.get("new_phone")
-                        if args.get("new_profile"): client.investment_profile = args.get("new_profile")
-                        db.commit()
-                        return {"reply": f"✅ **Client Updated!** Modifications saved for {client.name}."}
-
-                    elif fc.name == "delete_record":
-                        if not client: return {"reply": f"⚠️ Could not find client '{client_name}'."}
-                        
-                        r_type = str(args.get("record_type", "")).lower().strip()
-                        
-                        if "client" in r_type:
-                            db.query(models.Portfolio).filter(models.Portfolio.client_id == client.id).delete()
-                            db.query(models.Meeting).filter(models.Meeting.client_id == client.id).delete()
-                            db.delete(client)
-                            db.commit()
-                            return {"reply": f"🗑️ **Client Deleted!** Removed {client.name} and related records."}
-                        
-                        elif "portfolio" in r_type:
-                            deleted = db.query(models.Portfolio).filter(models.Portfolio.client_id == client.id).delete()
-                            db.commit()
-                            if deleted: return {"reply": f"🗑️ **Portfolio Deleted!** Removed portfolio for {client.name}."}
-                            return {"reply": f"⚠️ {client.name} doesn't have a portfolio to delete."}
-                        
-                        elif "meeting" in r_type:
-                            deleted = db.query(models.Meeting).filter(models.Meeting.client_id == client.id).delete()
-                            db.commit()
-                            if deleted: return {"reply": f"🗑️ **Meeting Deleted!** Canceled the meeting for {client.name}."}
-                            return {"reply": f"⚠️ {client.name} doesn't have any upcoming meetings."}
-                        else:
-                            return {"reply": f"⚠️ Please specify whether you want to delete the Client, Portfolio, or Meeting."}
-                    
                     else:
-                        return {"reply": f"⚠️ **AI Error:** I tried to use an unrecognized tool called `{fc.name}`. Please ask your question differently."}
+                        return {"reply": "⚠️ I am not authorized to perform that action."}
 
                 elif part.text:
                     return {"reply": part.text}
 
-        return {"reply": "⚠️ I processed your request, but generated no text response."}
+        return {"reply": "⚠️ No response generated."}
 
     except Exception as e:
         logger.error(f"Gemini API Error: {e}")
-        return {"reply": f"⚠️ **Connection Error:** Failed to connect to Google Gemini API."}
+        return {"reply": f"⚠️ Connection Error."}

@@ -5,7 +5,7 @@ import { useNavigate } from 'react-router-dom';
 import {
   MessageCircle, X, Send, Mic, MicOff, Paperclip,
   TrendingUp, Bot, Sparkles, FileText, Image, File,
-  Volume2, VolumeX // NEW: Added Volume icons for TTS toggle
+  Volume2, VolumeX
 } from 'lucide-react';
 import ReactMarkdown from 'react-markdown';
 
@@ -68,7 +68,6 @@ export default function ChatWidget() {
   const [micError,    setMicError]    = useState('');
   const [attachment,  setAttachment]  = useState<{ name: string; type: string; text: string } | null>(null);
   
-  // NEW: State to toggle Text-to-Speech output (Defaults to true for Hackathon wow-factor)
   const [isVoiceOutputEnabled, setIsVoiceOutputEnabled] = useState(true);
 
   const bottomRef      = useRef<HTMLDivElement>(null);
@@ -79,7 +78,7 @@ export default function ChatWidget() {
     bottomRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [messages, isOpen]);
 
-  // Cleanup on unmount (Stops recording AND stops speaking if widget is destroyed)
+  // Cleanup on unmount
   useEffect(() => {
     return () => {
       if (recRef.current) {
@@ -91,24 +90,19 @@ export default function ChatWidget() {
     };
   }, []);
 
-  // NEW: Text-to-Speech Helper Function
   const speakText = (text: string) => {
     if (!window.speechSynthesis || !isVoiceOutputEnabled) return;
     
-    // Stop any ongoing speech before starting a new one
     window.speechSynthesis.cancel();
     
-    // Clean the text: remove markdown symbols (*, #, _, `) so the AI doesn't say "asterisk"
     let cleanText = text.replace(/[*#_`~]/g, '');
-    // Remove navigation commands from spoken text
     cleanText = cleanText.replace(/🧭NAV:[a-z]+/g, '');
-    // Remove common emojis for cleaner speech flow
     cleanText = cleanText.replace(/[\u{1F600}-\u{1F64F}\u{1F300}-\u{1F5FF}\u{1F680}-\u{1F6FF}\u{1F700}-\u{1F77F}\u{1F780}-\u{1F7FF}\u{1F800}-\u{1F8FF}\u{1F900}-\u{1F9FF}\u{1FA00}-\u{1FA6F}\u{1FA70}-\u{1FAFF}\u{2600}-\u{26FF}\u{2700}-\u{27BF}]/gu, '');
     
     if (!cleanText.trim()) return;
 
     const utterance = new SpeechSynthesisUtterance(cleanText.trim());
-    utterance.rate = 1.0;  // Adjust speed if needed (1.0 is normal)
+    utterance.rate = 1.0; 
     utterance.pitch = 1.0; 
     utterance.lang = 'en-US';
     
@@ -132,7 +126,6 @@ export default function ChatWidget() {
       return;
     }
 
-    // NEW: Stop AI from talking when user starts dictating
     if (window.speechSynthesis) window.speechSynthesis.cancel();
 
     const rec = new SR();
@@ -286,7 +279,6 @@ export default function ChatWidget() {
       setIsListening(false);
     }
 
-    // Stop speaking when user sends a new message
     if (window.speechSynthesis) window.speechSynthesis.cancel();
 
     const fileContent = attachment?.text
@@ -315,19 +307,28 @@ export default function ChatWidget() {
     setIsLoading(true);
 
     try {
-      const token      = localStorage.getItem('token') || '';
+      // THE FIX: Properly build headers, only adding Authorization if token exists
+      const token = localStorage.getItem('token');
+      const headers: Record<string, string> = {
+        'Content-Type': 'application/json'
+      };
+      if (token) {
+        headers['Authorization'] = `Bearer ${token}`;
+      }
+
       const controller = new AbortController();
       const tid        = setTimeout(() => controller.abort(), 150000); 
       
       const res = await fetch('http://localhost:8000/api/chat', {
         method:  'POST',
-        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+        headers: headers,
         body:    JSON.stringify({ 
           message: fullMessage,
           history: historyToSend
         }),
         signal:  controller.signal,
       });
+      
       clearTimeout(tid);
       const data  = await res.json();
       const reply = data.reply || data.detail || '⚠️ No response received.';
@@ -339,7 +340,7 @@ export default function ChatWidget() {
       const navMatch = finalReply.match(/🧭NAV:([a-z]+)/);
       if (navMatch) {
         const page = navMatch[1];
-        const paths: Record<string, string> = { dashboard: '/', clients: '/clients', portfolios: '/portfolios', services: '/services', meetings: '/meetings' };
+        const paths: Record<string, string> = { dashboard: '/admin', clients: '/admin/clients', portfolios: '/admin/portfolios', services: '/admin/services', meetings: '/admin/meetings' };
         if (paths[page]) {
           navigate(paths[page]);
         }
@@ -351,7 +352,6 @@ export default function ChatWidget() {
         { id: thinkId, type: 'ai', content: finalReply },
       ]);
 
-      // NEW: Trigger Text-to-Speech playback of the final reply
       speakText(finalReply);
 
       if (finalReply.includes('✅') || finalReply.includes('🗑️')) {
@@ -375,10 +375,9 @@ export default function ChatWidget() {
     }
   };
 
-  // NEW: Handler to toggle voice output
   const toggleVoiceOutput = () => {
     if (isVoiceOutputEnabled && window.speechSynthesis) {
-      window.speechSynthesis.cancel(); // Stop talking immediately if muted
+      window.speechSynthesis.cancel();
     }
     setIsVoiceOutputEnabled(!isVoiceOutputEnabled);
   };
@@ -411,7 +410,6 @@ export default function ChatWidget() {
               </div>
             </div>
             
-            {/* NEW: Added a volume toggle and grouped it with the close button */}
             <div className="cw-header-actions" style={{ display: 'flex', gap: '0.5rem' }}>
               <button 
                 type="button" 

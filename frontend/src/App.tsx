@@ -2,13 +2,13 @@
 
 import React, { useState, useEffect, useCallback } from 'react';
 import ReactDOM from 'react-dom';
-import { BrowserRouter as Router, Routes, Route, Link, useLocation } from 'react-router-dom';
+import { BrowserRouter as Router, Routes, Route, Link, useLocation, Navigate } from 'react-router-dom';
 import ChatWidget from './chatbot/ChatWidget';
 import { AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer } from 'recharts';
 import {
   LayoutDashboard, Users, Briefcase, Settings, Calendar, TrendingUp,
   Search, Bell, ChevronDown, DollarSign, X, Clock, Shield, FileText,
-  CheckCircle, Lock, User, Eye, EyeOff, AlertCircle,
+  CheckCircle, Lock, User, Eye, EyeOff, AlertCircle, ArrowRight
 } from 'lucide-react';
 
 // ─────────────────────────────────────────────────────────────
@@ -35,7 +35,56 @@ const apiFetch = async (url: string, options: RequestInit = {}): Promise<Respons
 };
 
 // ─────────────────────────────────────────────────────────────
-// LOGIN
+// PUBLIC BUSINESS LANDING PAGE (NO LOGIN REQUIRED)
+// ─────────────────────────────────────────────────────────────
+const PublicLandingPage: React.FC = () => {
+  return (
+    <div className="min-h-screen bg-[#020617] text-white flex flex-col relative overflow-hidden font-sans">
+      {/* Background Glow Effects */}
+      <div className="absolute inset-0 pointer-events-none opacity-20">
+        <div className="absolute top-1/4 left-1/4 w-96 h-96 bg-emerald-500/20 blur-[120px] rounded-full" />
+        <div className="absolute bottom-1/4 right-1/4 w-96 h-96 bg-blue-500/20 blur-[120px] rounded-full" />
+      </div>
+
+      {/* Header */}
+      <header className="p-6 md:px-12 flex justify-between items-center relative z-10 border-b border-white/5 bg-slate-900/50 backdrop-blur-md">
+        <div className="flex items-center gap-3">
+          <div className="w-10 h-10 bg-emerald-500 rounded-xl flex items-center justify-center shadow-lg shadow-emerald-500/30">
+            <TrendingUp className="text-white w-6 h-6" />
+          </div>
+          <span className="text-2xl font-bold tracking-tight">Pro Finance</span>
+        </div>
+        <Link to="/login" className="text-sm font-bold text-slate-300 hover:text-white transition-colors bg-white/5 px-5 py-2.5 rounded-xl border border-white/10 hover:bg-white/10 flex items-center gap-2">
+          Admin Portal <ArrowRight size={16} />
+        </Link>
+      </header>
+
+      {/* Hero Content */}
+      <main className="flex-1 flex flex-col items-center justify-center text-center px-6 relative z-10">
+        <div className="max-w-4xl">
+          <div className="inline-block mb-4 px-4 py-1.5 rounded-full bg-emerald-500/10 border border-emerald-500/20 text-emerald-400 font-bold text-sm tracking-wide uppercase">
+            AI-Powered Wealth Management
+          </div>
+          <h1 className="text-5xl md:text-7xl font-extrabold tracking-tight mb-6 bg-gradient-to-r from-white via-slate-200 to-slate-400 bg-clip-text text-transparent leading-tight">
+            Secure Your Financial Future Today.
+          </h1>
+          <p className="text-lg md:text-xl text-slate-400 mb-10 leading-relaxed max-w-2xl mx-auto">
+            Expert wealth management, tax planning, and retirement strategies tailored to your unique goals. Talk to our AI assistant to get a personalized consultation.
+          </p>
+          <div className="flex items-center justify-center gap-4 animate-bounce">
+            <p className="text-emerald-400 font-bold">Chat with our AI on the right 👉</p>
+          </div>
+        </div>
+      </main>
+
+      {/* The Chatbot acts as the Lead Gen tool here */}
+      <ChatWidget />
+    </div>
+  );
+};
+
+// ─────────────────────────────────────────────────────────────
+// LOGIN PAGE
 // ─────────────────────────────────────────────────────────────
 const LoginPage: React.FC<{ onLogin: (t: string, u: string) => void }> = ({ onLogin }) => {
   const [username, setUsername] = useState('');
@@ -73,13 +122,19 @@ const LoginPage: React.FC<{ onLogin: (t: string, u: string) => void }> = ({ onLo
         <div className="absolute top-1/4 left-1/4 w-96 h-96 bg-emerald-500/20 blur-[120px] rounded-full" />
         <div className="absolute bottom-1/4 right-1/4 w-96 h-96 bg-blue-500/20 blur-[120px] rounded-full" />
       </div>
+      
+      {/* Back to Home Button */}
+      <Link to="/" className="absolute top-6 left-6 text-slate-400 hover:text-white flex items-center gap-2 transition-colors z-20">
+        <ArrowRight size={18} className="rotate-180" /> Back to Website
+      </Link>
+
       <div className="w-full max-w-[420px] px-6 relative z-10">
         <div className="bg-slate-900/40 backdrop-blur-3xl border border-white/10 p-10 rounded-[2.5rem] shadow-2xl">
           <div className="flex flex-col items-center mb-10">
             <div className="w-16 h-16 bg-emerald-500 rounded-2xl flex items-center justify-center mb-4 shadow-lg shadow-emerald-500/30">
               <TrendingUp className="text-white w-8 h-8" />
             </div>
-            <h1 className="text-2xl font-bold text-white tracking-tight">Pro Finance AI</h1>
+            <h1 className="text-2xl font-bold text-white tracking-tight">Admin Portal</h1>
             <p className="text-slate-400 text-sm mt-1">Internal System Access</p>
           </div>
           <form onSubmit={handleSubmit} className="space-y-4">
@@ -133,16 +188,16 @@ const Modal: React.FC<{ onClose: () => void; children: React.ReactNode; wide?: b
   );
 
 // ─────────────────────────────────────────────────────────────
-// SIDEBAR
+// SIDEBAR (ADMIN ONLY)
 // ─────────────────────────────────────────────────────────────
 const Sidebar: React.FC<{ onLogout: () => void }> = ({ onLogout }) => {
   const loc = useLocation();
   const nav = [
-    { icon: LayoutDashboard, label: 'Dashboard',  href: '/' },
-    { icon: Users,           label: 'Clients',    href: '/clients' },
-    { icon: Briefcase,       label: 'Portfolios', href: '/portfolios' },
-    { icon: Settings,        label: 'Services',   href: '/services' },
-    { icon: Calendar,        label: 'Meetings',   href: '/meetings' },
+    { icon: LayoutDashboard, label: 'Dashboard',  href: '/admin' },
+    { icon: Users,           label: 'Clients',    href: '/admin/clients' },
+    { icon: Briefcase,       label: 'Portfolios', href: '/admin/portfolios' },
+    { icon: Settings,        label: 'Services',   href: '/admin/services' },
+    { icon: Calendar,        label: 'Meetings',   href: '/admin/meetings' },
   ];
   return (
     <aside className="fixed left-0 top-0 h-screen w-64 flex flex-col border-r border-white/10 z-30 bg-slate-900/80 backdrop-blur-2xl">
@@ -157,7 +212,7 @@ const Sidebar: React.FC<{ onLogout: () => void }> = ({ onLogout }) => {
       </div>
       <nav className="flex-1 px-4 py-6 space-y-1">
         {nav.map(item => {
-          const active = loc.pathname === item.href;
+          const active = loc.pathname === item.href || (item.href !== '/admin' && loc.pathname.startsWith(item.href));
           return (
             <Link key={item.href} to={item.href}
               className={`flex items-center gap-3 px-4 py-3 rounded-xl text-sm font-medium transition-all duration-200 ${active ? 'bg-emerald-500/20 text-emerald-400 border border-emerald-500/30' : 'text-slate-400 hover:text-white hover:bg-white/5'}`}>
@@ -167,8 +222,11 @@ const Sidebar: React.FC<{ onLogout: () => void }> = ({ onLogout }) => {
           );
         })}
       </nav>
-      <div className="p-4 border-t border-white/10">
-        <button onClick={onLogout} className="w-full py-3 text-slate-500 hover:text-red-400 text-sm font-medium transition-colors text-left">
+      <div className="p-4 border-t border-white/10 space-y-2">
+        <Link to="/" className="block w-full py-2 text-slate-400 hover:text-emerald-400 text-sm font-medium transition-colors text-left flex items-center gap-2">
+          <ArrowRight size={16} className="rotate-180" /> View Live Site
+        </Link>
+        <button onClick={onLogout} className="w-full py-2 text-slate-500 hover:text-red-400 text-sm font-medium transition-colors text-left">
           Logout
         </button>
       </div>
@@ -183,7 +241,7 @@ const Header: React.FC = () => (
   <header className="sticky top-0 z-20 h-16 flex items-center px-8 border-b border-white/10 bg-slate-900/60 backdrop-blur-2xl shadow-sm">
     <h1 className="text-xl font-bold text-white tracking-tight flex items-center gap-3">
       <TrendingUp className="w-6 h-6 text-emerald-400" />
-      Pro Finance AI
+      Admin Dashboard
     </h1>
   </header>
 );
@@ -431,7 +489,10 @@ const ClientsPage: React.FC = () => {
           {clients.map(c => (
             <tr key={c.id} className="border-b border-white/5 hover:bg-white/5 transition-colors">
               <td className="py-4 font-medium">{c.name}</td>
-              <td className="py-4 text-sm text-slate-400 font-mono">{c.email}</td>
+              <td className="py-4 text-sm font-mono">
+                <div className="text-slate-300">{c.email}</div>
+                <div className="text-xs text-slate-500 mt-0.5">{c.phone}</div>
+              </td>
               <td className="py-4"><span className="px-2 py-1 rounded bg-emerald-500/10 text-emerald-400 text-xs font-bold">{c.investment_profile}</span></td>
               <td className="py-4 text-right font-mono text-slate-500">#000{c.id}</td>
             </tr>
@@ -727,7 +788,32 @@ const MeetingsPage: React.FC = () => {
 };
 
 // ─────────────────────────────────────────────────────────────
-// ROOT APP
+// ADMIN PROTECTED LAYOUT
+// ─────────────────────────────────────────────────────────────
+const AdminLayout: React.FC<{ onLogout: () => void }> = ({ onLogout }) => {
+  return (
+    <div className="flex min-h-screen font-sans bg-[#0f172a]">
+      <Sidebar onLogout={onLogout} />
+      <div className="flex-1 flex flex-col ml-64">
+        <Header />
+        <main className="flex-1 p-6 overflow-y-auto">
+          <Routes>
+            <Route path="/"           element={<DashboardHome />} />
+            <Route path="/clients"    element={<ClientsPage />} />
+            <Route path="/portfolios" element={<PortfoliosPage />} />
+            <Route path="/services"   element={<ServicesPage />} />
+            <Route path="/meetings"   element={<MeetingsPage />} />
+          </Routes>
+        </main>
+        {/* The Chatbot acts as the Admin Assistant here */}
+        <ChatWidget />
+      </div>
+    </div>
+  );
+};
+
+// ─────────────────────────────────────────────────────────────
+// ROOT APP ROUTER
 // ─────────────────────────────────────────────────────────────
 export default function App() {
   const [token, setToken] = useState<string | null>(localStorage.getItem('token'));
@@ -736,11 +822,15 @@ export default function App() {
   const handleLogin = (t: string, u: string) => {
     localStorage.setItem('token', t); localStorage.setItem('user', u);
     setToken(t); setUser(u);
+    // Hard refresh to admin panel
+    window.location.href = '/admin';
   };
 
   const handleLogout = useCallback(() => {
     localStorage.removeItem('token'); localStorage.removeItem('user');
     setToken(null); setUser(null);
+    // Hard refresh back to public page
+    window.location.href = '/';
   }, []);
 
   useEffect(() => {
@@ -748,26 +838,22 @@ export default function App() {
     return () => { _forceLogout = null; };
   }, [handleLogout]);
 
-  if (!token) return <LoginPage onLogin={handleLogin} />;
-
   return (
     <Router>
-      <div className="flex min-h-screen font-sans bg-[#0f172a]">
-        <Sidebar onLogout={handleLogout} />
-        <div className="flex-1 flex flex-col ml-64">
-          <Header />
-          <main className="flex-1 p-6 overflow-y-auto">
-            <Routes>
-              <Route path="/"           element={<DashboardHome />} />
-              <Route path="/clients"    element={<ClientsPage />} />
-              <Route path="/portfolios" element={<PortfoliosPage />} />
-              <Route path="/services"   element={<ServicesPage />} />
-              <Route path="/meetings"   element={<MeetingsPage />} />
-            </Routes>
-          </main>
-          <ChatWidget />
-        </div>
-      </div>
+      <Routes>
+        {/* 1. PUBLIC LANDING PAGE (NO AUTH) */}
+        <Route path="/" element={<PublicLandingPage />} />
+        
+        {/* 2. LOGIN PAGE */}
+        <Route path="/login" element={
+          token ? <Navigate to="/admin" /> : <LoginPage onLogin={handleLogin} />
+        } />
+
+        {/* 3. PROTECTED ADMIN DASHBOARD (REQUIRES AUTH) */}
+        <Route path="/admin/*" element={
+          token ? <AdminLayout onLogout={handleLogout} /> : <Navigate to="/login" />
+        } />
+      </Routes>
     </Router>
   );
 }

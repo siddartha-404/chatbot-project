@@ -1,9 +1,9 @@
-from sqlalchemy import Column, Integer, String, Float, DateTime, ForeignKey
+from sqlalchemy import Column, Integer, String, Float, DateTime, ForeignKey, Boolean
 from sqlalchemy.orm import relationship
 from datetime import datetime
 from .database import Base
 
-# 1. Clients Table
+# 1. Clients Table (Lead + Client tracker)
 class Client(Base):
     __tablename__ = "clients"
     
@@ -12,10 +12,11 @@ class Client(Base):
     email = Column(String, unique=True, index=True)
     phone = Column(String)
     investment_profile = Column(String)
+    status = Column(String, default="Lead") # Track if they are a Lead, Active, or At-Risk
     
-    # Relationships
     portfolios = relationship("Portfolio", back_populates="owner")
     meetings = relationship("Meeting", back_populates="client")
+    invoices = relationship("Invoice", back_populates="client")
 
 # 2. Portfolios Table
 class Portfolio(Base):
@@ -23,13 +24,13 @@ class Portfolio(Base):
     
     id = Column(Integer, primary_key=True, index=True)
     client_id = Column(Integer, ForeignKey("clients.id"))
-    assets = Column(String)  # We will store asset allocation as a string/JSON
+    assets = Column(String)
     value = Column(Float)
     risk_score = Column(Float)
     
     owner = relationship("Client", back_populates="portfolios")
 
-# 3. Services Table
+# 3. Services Table (Your Product Catalog)
 class Service(Base):
     __tablename__ = "services"
     
@@ -49,11 +50,22 @@ class Meeting(Base):
     
     client = relationship("Client", back_populates="meetings")
 
+# 5. Invoices Table (NEW: For Cash Flow tracking)
+class Invoice(Base):
+    __tablename__ = "invoices"
+    
+    id = Column(Integer, primary_key=True, index=True)
+    client_id = Column(Integer, ForeignKey("clients.id"))
+    amount = Column(Float)
+    is_paid = Column(Boolean, default=False)
+    due_date = Column(DateTime)
 
-# 5. Users Table
+    client = relationship("Client", back_populates="invoices")
+
+# 6. Users Table
 class User(Base):
     __tablename__ = "users"
     id = Column(Integer, primary_key=True, index=True)
     username = Column(String, unique=True, index=True)
     hashed_password = Column(String)
-    role = Column(String, default="advisor") # advisor or analyst
+    role = Column(String, default="admin")
